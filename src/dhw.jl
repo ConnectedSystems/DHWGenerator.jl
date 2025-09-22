@@ -76,7 +76,6 @@ The parameters are tuned based on coral bleaching research:
 - `n_locations`: Number of spatial locations across the reef system
 - `rng`: Random number generator for reproducible results
 - `start_year`: Starting year for the simulation (default: 2020)
-- `with_dhw`: Whether to generate DHW data or return zeros (default: true)
 - `warming_rate`: Rate of long-term warming per year in °C (default: 0.15°C/year)
 - `seasonal_amplitude`: Strength of seasonal temperature cycles (default: 1.2°C)
 - `dhw_threshold`: Temperature threshold above which DHW accumulates (default: 4.0°C)
@@ -87,7 +86,6 @@ function generate_dhw_trajectories(
     n_locations::Int64;
     rng::AbstractRNG=Random.GLOBAL_RNG,
     start_year::Int64=2020,
-    with_dhw=true,
     warming_rate::Float32=0.15f0,
     seasonal_amplitude::Float32=1.2f0,
     dhw_threshold::Float32=4.0f0,
