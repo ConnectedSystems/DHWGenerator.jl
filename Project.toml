@@ -1,3 +1,8 @@
+name = "DHWGenerator"
+uuid = "4867afc0-e43d-4d41-999a-a30083bc751e"
+authors = ["Takuya Iwanaga"]
+version = "0.1.0"
+
 [deps]
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 YAXArrays = "c21b50f5-aa40-41ea-b809-c0f5e47bfa5c"
