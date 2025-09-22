@@ -8,7 +8,7 @@ testing, validation, and scenario exploration.
 Chiefly, the methods can be used to create indicative time series that follow an assumed:
 
 - Rate of warming
-- Year-on-year variability
+- Year-on-year variability (seasonal and short-term fluctuations)
 - Number of extreme events
 
 ## Setup
