@@ -1,6 +1,15 @@
 # DHWGenerator.jl
 
-Generator of synthetic DHW trajectories.
+Synthetic DHW generation for coral reefs.
+
+This package provides methods to generate synthetic DHW trajectories to aid in model
+testing, validation, and scenario exploration.
+
+Chiefly, the methods can be used to create indicative time series that follow an assumed:
+
+- Rate of warming
+- Year-on-year variability
+- Number of extreme events
 
 ## Setup
 
