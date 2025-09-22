@@ -2,6 +2,15 @@
 
 Generator of synthetic DHW trajectories.
 
+## Setup
+
+This package is not yet registered.
+
+If using in production, install directly from the GitHub repository:
+
+```julia
+] add https://github.com/ConnectedSystems/DHWGenerator.jl
+```
 
 ## Development setup
 
