@@ -1,16 +1,22 @@
 using Random
 using YAXArrays
+using GeoIO
+using DataFrames
+using GeometryOps
+using NCDatasets
+using OrderedCollections
 
 """
     generate_dhw_trajectories(
         n_years::Int64,
-        n_locations::Int64;
         rng::AbstractRNG=Random.GLOBAL_RNG,
         start_year::Int64=2020,
         with_dhw=true,
         warming_rate::Float32=0.15f0,
         seasonal_amplitude::Float32=1.2f0,
         dhw_threshold::Float32=4.0f0,
+        earth_radius::Float32=6371.0f0,
+        spatial_length_scale::Float32=0.5f0,
         noise_amplitude::Float32=0.9f0
     )
 
@@ -73,29 +79,59 @@ The parameters are tuned based on coral bleaching research:
 
 # Arguments
 - `n_years`: Number of time steps to simulate (in years)
-- `n_locations`: Number of spatial locations across the reef system
 - `rng`: Random number generator for reproducible results
 - `start_year`: Starting year for the simulation (default: 2020)
 - `warming_rate`: Rate of long-term warming per year in °C (default: 0.15°C/year)
 - `seasonal_amplitude`: Strength of seasonal temperature cycles (default: 1.2°C)
 - `dhw_threshold`: Temperature threshold above which DHW accumulates (default: 4.0°C)
+- `earth_radius`: Earth radius in km (default: 6371 km)
+- `spatial_length_scale`: Controls how strongly nearby reef sites influence each other - adjust as needed (default: 0.5)
 - `noise_amplitude`: Magnitude of random weather variations (default: 0.9°C)
 """
 function generate_dhw_trajectories(
     n_years::Int64,
-    n_locations::Int64;
     rng::AbstractRNG=Random.GLOBAL_RNG,
     start_year::Int64=2020,
     warming_rate::Float32=0.15f0,
     seasonal_amplitude::Float32=1.2f0,
     dhw_threshold::Float32=4.0f0,
+    earth_radius::Float32=6371.0f0,
+    spatial_length_scale::Float32=0.5f0,
     noise_amplitude::Float32=0.9f0
 )::YAXArray
-    # Calculate baseline parameters
-    years = range(start_year, length=n_years) .- start_year
+    # Read spatial data
+    geo_coord = GeoIO.load("inputs/MooreCluster_SpatialPolygons.gpkg")
 
+    # Convert spatial data to a dataframe
+    df = DataFrame(geo_coord)
+
+    # Generate centroids of spatial polygons and extract latitudes and longitudes
+    df.centroids = [GeometryOps.centroid(row.geometry) for row in eachrow(df)]
+    df.longitude = [c[1] for c in df.centroids]
+    df.latitude = [c[2] for c in df.centroids]
+    coords= hcat(df.latitude,df.longitude)
+
+    n_locations = size(coords,1) # Number of spatial locations across the reef system
+    
     # Initialize vectors
     dhw_data = zeros(Float32, n_years, n_locations)
+    spatial_kernel = zeros(Float32, n_locations, n_locations)
+    
+    for i in 1:n_locations, j in 1:n_locations
+        # Compute pairwise haversine distances (in kilometers)
+        p1 = coords[i,:]
+        p2 = coords[j,:]
+        dlat = deg2rad(p2[1] - p1[1]) 
+        dlon = deg2rad(p2[2] - p1[2])
+        a = sin(dlat/2)^2 + cos(deg2rad(p1[1])) * cos(deg2rad(p2[1])) * sin(dlon/2)^2
+        c = c = 2 * atan(sqrt(a), sqrt(1 - a))
+
+        # Compute spatial correlation using Gaussian spatial kernel
+        spatial_kernel[i,j] = exp.(-(earth_radius * c) ^2 / (2 * spatial_length_scale ^2)) 
+    end
+    
+    # Calculate baseline parameters
+    years = range(start_year, length=n_years) .- start_year
 
     for loc in 1:n_locations
         # Location-specific random offset to create spatial variation
@@ -106,6 +142,10 @@ function generate_dhw_trajectories(
 
         # Generate temperature anomaly time series
         for t in 1:n_years
+            # Generate spatially correlated noise for this timestep
+            base_noise = randn(rng, n_locations)
+            spatially_correlated_noise = spatial_kernel * base_noise
+            
             # Long-term warming trend
             warming_trend = warming_rate * years[t]
 
@@ -115,7 +155,7 @@ function generate_dhw_trajectories(
 
             # Random weather variations with increased variability over time
             weather_scaling = 1.0f0 + 0.3f0 * (years[t] / years[end])
-            weather_noise = randn(rng) * noise_amplitude * weather_scaling
+            weather_noise = noise_amplitude * weather_scaling * spatially_correlated_noise[loc]
 
             # Combined temperature anomaly
             temp_anomaly = (
@@ -220,6 +260,34 @@ function generate_dhw_trajectories(
         Dim{:timestep}(1:n_years),
         Dim{:location}(1:n_locations)
     )
+    dhw = YAXArray(v_axes, dhw_data)
 
-    return YAXArray(v_axes, dhw_data)
+    # Create NetCDF file
+    ds = NCDatasets.Dataset("outputs/dhw_output.nc", "c") 
+
+    # Define dimensions
+    defDim(ds, "time", size(dhw, 1)) 
+    defDim(ds, "location", size(dhw, 2))
+
+    # Define variables and attributes
+    lat_var = defVar(ds, "latitude", Float32, ("location",), attrib = OrderedDict(
+                    "units" => "degrees_south",
+                    "standard_name" => "latitude",
+                    "long_name" => "latitude",))
+    lon_var = defVar(ds, "longitude", Float32, ("location",), attrib = OrderedDict(
+                    "units" => "degrees_east",
+                    "standard_name" => "longitude",
+                    "long_name" => "longitude",))
+    dhw_var = defVar(ds, "DHW", Float32, ("time", "location"), attrib = OrderedDict(
+                    "units" => "DegC-weeks",
+                    "standard_name" => "DHW",
+                    "long_name" => "degree heating weeks",))
+
+    #Write data
+    lat_var[:] = df.latitude
+    lon_var[:] = df.longitude
+    dhw_var[:, :] = dhw.data  
+
+    close(ds)
+    return dhw
 end
