@@ -1,21 +1,26 @@
 using Random
-using YAXArrays
-using GeoIO
-using DataFrames
-using GeometryOps
-using NCDatasets
 using OrderedCollections
+
+import GeoDataFrames as GDF
+using DataFrames
+
+using Distances
+import GeometryOps as GO
+
+using YAXArrays
+using NetCDF
+using NCDatasets
 
 """
     generate_dhw_trajectories(
         n_years::Int64,
+        start_year::Int64,
+        end_year::Int64;
         rng::AbstractRNG=Random.GLOBAL_RNG,
-        start_year::Int64=2020,
         with_dhw=true,
         warming_rate::Float32=0.15f0,
         seasonal_amplitude::Float32=1.2f0,
         dhw_threshold::Float32=4.0f0,
-        earth_radius::Float32=6371.0f0,
         spatial_length_scale::Float32=0.5f0,
         noise_amplitude::Float32=0.9f0
     )
@@ -79,63 +84,58 @@ The parameters are tuned based on coral bleaching research:
 
 # Arguments
 - `n_years`: Number of time steps to simulate (in years)
+- `start_year`: Starting year for the simulation
+- `end_year`: End year for the simulation
 - `rng`: Random number generator for reproducible results
-- `start_year`: Starting year for the simulation (default: 2020)
 - `warming_rate`: Rate of long-term warming per year in °C (default: 0.15°C/year)
 - `seasonal_amplitude`: Strength of seasonal temperature cycles (default: 1.2°C)
 - `dhw_threshold`: Temperature threshold above which DHW accumulates (default: 4.0°C)
-- `earth_radius`: Earth radius in km (default: 6371 km)
 - `spatial_length_scale`: Controls how strongly nearby reef sites influence each other - adjust as needed (default: 0.5)
 - `noise_amplitude`: Magnitude of random weather variations (default: 0.9°C)
+- `avg_extreme_years`: Average time between extreme years (default: 12 years)
 """
 function generate_dhw_trajectories(
-    n_years::Int64,
+    reef_representation::String,
+    start_year::Int64,
+    end_year::Int64;
     rng::AbstractRNG=Random.GLOBAL_RNG,
-    start_year::Int64=2020,
     warming_rate::Float32=0.15f0,
     seasonal_amplitude::Float32=1.2f0,
     dhw_threshold::Float32=4.0f0,
-    earth_radius::Float32=6371.0f0,
     spatial_length_scale::Float32=0.5f0,
-    noise_amplitude::Float32=0.9f0
+    noise_amplitude::Float32=0.9f0,
+    avg_extreme_years::Int64=12
 )::YAXArray
-    # Read spatial data
-    geo_coord = GeoIO.load("inputs/MooreCluster_SpatialPolygons.gpkg")
+    n_years = (end_year - start_year) + 1
 
-    # Convert spatial data to a dataframe
-    df = DataFrame(geo_coord)
+    # Read in geospatial data
+    geo_coord = GDF.read(reef_representation)
+    n_locations = nrow(geo_coord)
 
     # Generate centroids of spatial polygons and extract latitudes and longitudes
-    df.centroids = [GeometryOps.centroid(row.geometry) for row in eachrow(df)]
-    df.longitude = [c[1] for c in df.centroids]
-    df.latitude = [c[2] for c in df.centroids]
-    coords= hcat(df.latitude,df.longitude)
+    cents = GO.centroid.(geo_coord.geometry)
+    longs = first.(cents)
+    lats = last.(cents)
+    coords = hcat(longs, lats)
 
-    n_locations = size(coords,1) # Number of spatial locations across the reef system
-    
     # Initialize vectors
     dhw_data = zeros(Float32, n_years, n_locations)
     spatial_kernel = zeros(Float32, n_locations, n_locations)
-    
+
     for i in 1:n_locations, j in 1:n_locations
         # Compute pairwise haversine distances (in kilometers)
-        p1 = coords[i,:]
-        p2 = coords[j,:]
-        dlat = deg2rad(p2[1] - p1[1]) 
-        dlon = deg2rad(p2[2] - p1[2])
-        a = sin(dlat/2)^2 + cos(deg2rad(p1[1])) * cos(deg2rad(p2[1])) * sin(dlon/2)^2
-        c = c = 2 * atan(sqrt(a), sqrt(1 - a))
+        c = haversine(coords[i, :], coords[j, :]) * 0.001
 
         # Compute spatial correlation using Gaussian spatial kernel
-        spatial_kernel[i,j] = exp.(-(earth_radius * c) ^2 / (2 * spatial_length_scale ^2)) 
+        spatial_kernel[i, j] = Float32(exp(-c^2 / (2.0 * spatial_length_scale^2)))
     end
-    
+
     # Calculate baseline parameters
     years = range(start_year, length=n_years) .- start_year
 
     for loc in 1:n_locations
         # Location-specific random offset to create spatial variation
-        spatial_offset = rand(rng) * 0.8f0  # Increased spatial variation
+        spatial_offset = rand(rng, Float32) * 0.8f0  # Increased spatial variation
 
         # Track consecutive weeks above threshold
         weeks_above_threshold = 0
@@ -145,7 +145,7 @@ function generate_dhw_trajectories(
             # Generate spatially correlated noise for this timestep
             base_noise = randn(rng, n_locations)
             spatially_correlated_noise = spatial_kernel * base_noise
-            
+
             # Long-term warming trend
             warming_trend = warming_rate * years[t]
 
@@ -171,7 +171,8 @@ function generate_dhw_trajectories(
             if temp_anomaly > dhw_threshold
                 weeks_above_threshold += 1
 
-                # Base DHW accumulation
+                # Base DHW accumulation (where 4.0 converts weekly temperature to DHW)
+                # Assumes 1 DHW = 1°C > threshold for 1 week
                 dhw_accumulation = (temp_anomaly - dhw_threshold) / 4.0f0
 
                 # Add possibility of acute temperature spikes
@@ -179,7 +180,7 @@ function generate_dhw_trajectories(
                     # Chance of acute event increases with warming trend
                     acute_probability = min(0.2f0 * (1.0f0 + warming_trend), 0.4f0)
 
-                    if rand(rng) < acute_probability
+                    if rand(rng, Float32) < acute_probability
                         # Generate acute spike with magnitude increasing over time
                         time_factor = years[t] / years[end]
                         base_spike = 3.0f0 + 2.0f0 * time_factor  # Spikes get larger over time
@@ -216,11 +217,10 @@ function generate_dhw_trajectories(
         end
 
         # Add extreme marine heatwave events
-        # lower denominator for more events
-        n_extreme_events = floor(Int, n_years / 12)
+        n_extreme_events = floor(Int, n_years / avg_extreme_years)
 
         for _ in 1:n_extreme_events
-            event_time = rand(rng, 1:n_years)
+            event_time::Int64 = rand(rng, 1:n_years)
             time_progress = years[event_time] / years[end]
             event_probability = time_progress * 1.8f0  # Higher probability in later years
 
@@ -257,37 +257,52 @@ function generate_dhw_trajectories(
 
     # Variable axes
     v_axes = (
-        Dim{:timestep}(1:n_years),
-        Dim{:location}(1:n_locations)
+        Dim{:timestep}(start_year:end_year),
+        Dim{:location}(geo_coord.UNIQUE_ID)
     )
-    dhw = YAXArray(v_axes, dhw_data)
+    prop = OrderedDict(
+        "longitude" => longs,
+        "latitude" => lats
+    )
+    dhw = YAXArray(v_axes, dhw_data, prop)
 
-    # Create NetCDF file
-    ds = NCDatasets.Dataset("outputs/dhw_output.nc", "c") 
-
-    # Define dimensions
-    defDim(ds, "time", size(dhw, 1)) 
-    defDim(ds, "location", size(dhw, 2))
-
-    # Define variables and attributes
-    lat_var = defVar(ds, "latitude", Float32, ("location",), attrib = OrderedDict(
-                    "units" => "degrees_south",
-                    "standard_name" => "latitude",
-                    "long_name" => "latitude",))
-    lon_var = defVar(ds, "longitude", Float32, ("location",), attrib = OrderedDict(
-                    "units" => "degrees_east",
-                    "standard_name" => "longitude",
-                    "long_name" => "longitude",))
-    dhw_var = defVar(ds, "DHW", Float32, ("time", "location"), attrib = OrderedDict(
-                    "units" => "DegC-weeks",
-                    "standard_name" => "DHW",
-                    "long_name" => "degree heating weeks",))
-
-    #Write data
-    lat_var[:] = df.latitude
-    lon_var[:] = df.longitude
-    dhw_var[:, :] = dhw.data  
-
-    close(ds)
     return dhw
+end
+
+function write_dataset(fn::String, dhw_dataset::YAXArray)::Nothing
+
+    try
+        # Create NetCDF file
+        ds = NCDatasets.Dataset(fn, "c")
+
+        # Define dimensions
+        defDim(ds, "time", size(dhw_dataset, 1))
+        defDim(ds, "location", size(dhw_dataset, 2))
+
+        # Define variables and attributes
+        lat_var = defVar(ds, "latitude", Float32, ("location",), attrib=OrderedDict(
+            "units" => "degrees_south",
+            "standard_name" => "latitude",
+            "long_name" => "latitude",))
+        lon_var = defVar(ds, "longitude", Float32, ("location",), attrib=OrderedDict(
+            "units" => "degrees_east",
+            "standard_name" => "longitude",
+            "long_name" => "longitude",))
+        dhw_var = defVar(ds, "DHW", Float32, ("time", "location"), attrib=OrderedDict(
+            "units" => "DegC-weeks",
+            "standard_name" => "DHW",
+            "long_name" => "degree heating weeks",))
+
+        #Write data
+        lat_var[:] = dhw_dataset.properties["latitude"]
+        lon_var[:] = dhw_dataset.properties["longitude"]
+        dhw_var[:, :] = dhw_dataset.data
+
+        close(ds)
+    catch err
+        @info "Error encountered when attempting to create netCDF: $(err)"
+        close(ds)
+    end
+
+    return nothing
 end
