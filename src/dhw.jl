@@ -255,37 +255,52 @@ function generate_dhw_trajectories(
 
     # Variable axes
     v_axes = (
-        Dim{:timestep}(1:n_years),
-        Dim{:location}(1:n_locations)
+        Dim{:timestep}(start_year:end_year),
+        Dim{:location}(geo_coord.UNIQUE_ID)
     )
-    dhw = YAXArray(v_axes, dhw_data)
+    prop = OrderedDict(
+        "longitude" => longs,
+        "latitude" => lats
+    )
+    dhw = YAXArray(v_axes, dhw_data, prop)
 
-    # Create NetCDF file
-    ds = NCDatasets.Dataset("outputs/dhw_output.nc", "c") 
-
-    # Define dimensions
-    defDim(ds, "time", size(dhw, 1)) 
-    defDim(ds, "location", size(dhw, 2))
-
-    # Define variables and attributes
-    lat_var = defVar(ds, "latitude", Float32, ("location",), attrib = OrderedDict(
-                    "units" => "degrees_south",
-                    "standard_name" => "latitude",
-                    "long_name" => "latitude",))
-    lon_var = defVar(ds, "longitude", Float32, ("location",), attrib = OrderedDict(
-                    "units" => "degrees_east",
-                    "standard_name" => "longitude",
-                    "long_name" => "longitude",))
-    dhw_var = defVar(ds, "DHW", Float32, ("time", "location"), attrib = OrderedDict(
-                    "units" => "DegC-weeks",
-                    "standard_name" => "DHW",
-                    "long_name" => "degree heating weeks",))
-
-    #Write data
-    lat_var[:] = df.latitude
-    lon_var[:] = df.longitude
-    dhw_var[:, :] = dhw.data  
-
-    close(ds)
     return dhw
+end
+
+function write_dataset(fn::String, dhw_dataset::YAXArray)::Nothing
+
+    try
+        # Create NetCDF file
+        ds = NCDatasets.Dataset(fn, "c")
+
+        # Define dimensions
+        defDim(ds, "time", size(dhw_dataset, 1))
+        defDim(ds, "location", size(dhw_dataset, 2))
+
+        # Define variables and attributes
+        lat_var = defVar(ds, "latitude", Float32, ("location",), attrib=OrderedDict(
+            "units" => "degrees_south",
+            "standard_name" => "latitude",
+            "long_name" => "latitude",))
+        lon_var = defVar(ds, "longitude", Float32, ("location",), attrib=OrderedDict(
+            "units" => "degrees_east",
+            "standard_name" => "longitude",
+            "long_name" => "longitude",))
+        dhw_var = defVar(ds, "DHW", Float32, ("time", "location"), attrib=OrderedDict(
+            "units" => "DegC-weeks",
+            "standard_name" => "DHW",
+            "long_name" => "degree heating weeks",))
+
+        #Write data
+        lat_var[:] = dhw_dataset.properties["latitude"]
+        lon_var[:] = dhw_dataset.properties["longitude"]
+        dhw_var[:, :] = dhw_dataset.data
+
+        close(ds)
+    catch err
+        @info "Error encountered when attempting to create netCDF: $(err)"
+        close(ds)
+    end
+
+    return nothing
 end
