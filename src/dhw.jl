@@ -14,13 +14,13 @@ using NCDatasets
 """
     generate_dhw_trajectories(
         n_years::Int64,
+        start_year::Int64,
+        end_year::Int64;
         rng::AbstractRNG=Random.GLOBAL_RNG,
-        start_year::Int64=2020,
         with_dhw=true,
         warming_rate::Float32=0.15f0,
         seasonal_amplitude::Float32=1.2f0,
         dhw_threshold::Float32=4.0f0,
-        earth_radius::Float32=6371.0f0,
         spatial_length_scale::Float32=0.5f0,
         noise_amplitude::Float32=0.9f0
     )
@@ -84,14 +84,15 @@ The parameters are tuned based on coral bleaching research:
 
 # Arguments
 - `n_years`: Number of time steps to simulate (in years)
+- `start_year`: Starting year for the simulation
+- `end_year`: End year for the simulation
 - `rng`: Random number generator for reproducible results
-- `start_year`: Starting year for the simulation (default: 2020)
 - `warming_rate`: Rate of long-term warming per year in °C (default: 0.15°C/year)
 - `seasonal_amplitude`: Strength of seasonal temperature cycles (default: 1.2°C)
 - `dhw_threshold`: Temperature threshold above which DHW accumulates (default: 4.0°C)
-- `earth_radius`: Earth radius in km (default: 6371 km)
 - `spatial_length_scale`: Controls how strongly nearby reef sites influence each other - adjust as needed (default: 0.5)
 - `noise_amplitude`: Magnitude of random weather variations (default: 0.9°C)
+- `avg_extreme_years`: Average time between extreme years (default: 12 years)
 """
 function generate_dhw_trajectories(
     reef_representation::String,
@@ -102,7 +103,8 @@ function generate_dhw_trajectories(
     seasonal_amplitude::Float32=1.2f0,
     dhw_threshold::Float32=4.0f0,
     spatial_length_scale::Float32=0.5f0,
-    noise_amplitude::Float32=0.9f0
+    noise_amplitude::Float32=0.9f0,
+    avg_extreme_years::Int64=12
 )::YAXArray
     n_years = (end_year - start_year) + 1
 
@@ -169,7 +171,8 @@ function generate_dhw_trajectories(
             if temp_anomaly > dhw_threshold
                 weeks_above_threshold += 1
 
-                # Base DHW accumulation
+                # Base DHW accumulation (where 4.0 converts weekly temperature to DHW)
+                # Assumes 1 DHW = 1°C > threshold for 1 week
                 dhw_accumulation = (temp_anomaly - dhw_threshold) / 4.0f0
 
                 # Add possibility of acute temperature spikes
@@ -214,8 +217,7 @@ function generate_dhw_trajectories(
         end
 
         # Add extreme marine heatwave events
-        # lower denominator for more events
-        n_extreme_events = floor(Int, n_years / 12)
+        n_extreme_events = floor(Int, n_years / avg_extreme_years)
 
         for _ in 1:n_extreme_events
             event_time::Int64 = rand(rng, 1:n_years)
