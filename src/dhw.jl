@@ -1,10 +1,15 @@
 using Random
-using YAXArrays
-using GeoIO
-using DataFrames
-using GeometryOps
-using NCDatasets
 using OrderedCollections
+
+import GeoDataFrames as GDF
+using DataFrames
+
+using Distances
+import GeometryOps as GO
+
+using YAXArrays
+using NetCDF
+using NCDatasets
 
 """
     generate_dhw_trajectories(
@@ -89,53 +94,46 @@ The parameters are tuned based on coral bleaching research:
 - `noise_amplitude`: Magnitude of random weather variations (default: 0.9°C)
 """
 function generate_dhw_trajectories(
-    n_years::Int64,
+    reef_representation::String,
+    start_year::Int64,
+    end_year::Int64;
     rng::AbstractRNG=Random.GLOBAL_RNG,
-    start_year::Int64=2020,
     warming_rate::Float32=0.15f0,
     seasonal_amplitude::Float32=1.2f0,
     dhw_threshold::Float32=4.0f0,
-    earth_radius::Float32=6371.0f0,
     spatial_length_scale::Float32=0.5f0,
     noise_amplitude::Float32=0.9f0
 )::YAXArray
-    # Read spatial data
-    geo_coord = GeoIO.load("inputs/MooreCluster_SpatialPolygons.gpkg")
+    n_years = (end_year - start_year) + 1
 
-    # Convert spatial data to a dataframe
-    df = DataFrame(geo_coord)
+    # Read in geospatial data
+    geo_coord = GDF.read(reef_representation)
+    n_locations = nrow(geo_coord)
 
     # Generate centroids of spatial polygons and extract latitudes and longitudes
-    df.centroids = [GeometryOps.centroid(row.geometry) for row in eachrow(df)]
-    df.longitude = [c[1] for c in df.centroids]
-    df.latitude = [c[2] for c in df.centroids]
-    coords= hcat(df.latitude,df.longitude)
+    cents = GO.centroid.(geo_coord.geometry)
+    longs = first.(cents)
+    lats = last.(cents)
+    coords = hcat(longs, lats)
 
-    n_locations = size(coords,1) # Number of spatial locations across the reef system
-    
     # Initialize vectors
     dhw_data = zeros(Float32, n_years, n_locations)
     spatial_kernel = zeros(Float32, n_locations, n_locations)
-    
+
     for i in 1:n_locations, j in 1:n_locations
         # Compute pairwise haversine distances (in kilometers)
-        p1 = coords[i,:]
-        p2 = coords[j,:]
-        dlat = deg2rad(p2[1] - p1[1]) 
-        dlon = deg2rad(p2[2] - p1[2])
-        a = sin(dlat/2)^2 + cos(deg2rad(p1[1])) * cos(deg2rad(p2[1])) * sin(dlon/2)^2
-        c = c = 2 * atan(sqrt(a), sqrt(1 - a))
+        c = haversine(coords[i, :], coords[j, :]) * 0.001
 
         # Compute spatial correlation using Gaussian spatial kernel
-        spatial_kernel[i,j] = exp.(-(earth_radius * c) ^2 / (2 * spatial_length_scale ^2)) 
+        spatial_kernel[i, j] = Float32(exp(-c^2 / (2.0 * spatial_length_scale^2)))
     end
-    
+
     # Calculate baseline parameters
     years = range(start_year, length=n_years) .- start_year
 
     for loc in 1:n_locations
         # Location-specific random offset to create spatial variation
-        spatial_offset = rand(rng) * 0.8f0  # Increased spatial variation
+        spatial_offset = rand(rng, Float32) * 0.8f0  # Increased spatial variation
 
         # Track consecutive weeks above threshold
         weeks_above_threshold = 0
@@ -145,7 +143,7 @@ function generate_dhw_trajectories(
             # Generate spatially correlated noise for this timestep
             base_noise = randn(rng, n_locations)
             spatially_correlated_noise = spatial_kernel * base_noise
-            
+
             # Long-term warming trend
             warming_trend = warming_rate * years[t]
 
@@ -179,7 +177,7 @@ function generate_dhw_trajectories(
                     # Chance of acute event increases with warming trend
                     acute_probability = min(0.2f0 * (1.0f0 + warming_trend), 0.4f0)
 
-                    if rand(rng) < acute_probability
+                    if rand(rng, Float32) < acute_probability
                         # Generate acute spike with magnitude increasing over time
                         time_factor = years[t] / years[end]
                         base_spike = 3.0f0 + 2.0f0 * time_factor  # Spikes get larger over time
@@ -220,7 +218,7 @@ function generate_dhw_trajectories(
         n_extreme_events = floor(Int, n_years / 12)
 
         for _ in 1:n_extreme_events
-            event_time = rand(rng, 1:n_years)
+            event_time::Int64 = rand(rng, 1:n_years)
             time_progress = years[event_time] / years[end]
             event_probability = time_progress * 1.8f0  # Higher probability in later years
 
