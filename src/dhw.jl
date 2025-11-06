@@ -13,7 +13,7 @@ using NCDatasets
 
 """
     generate_dhw_trajectories(
-        n_years::Int64,
+        reef_representation::String,
         start_year::Int64,
         end_year::Int64;
         rng::AbstractRNG=Random.GLOBAL_RNG,
